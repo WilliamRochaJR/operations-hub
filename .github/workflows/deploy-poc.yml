@@ -2,8 +2,6 @@ name: Deploy PoC to AWS
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
