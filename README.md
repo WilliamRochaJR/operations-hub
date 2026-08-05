@@ -56,6 +56,14 @@ mvn -f microservices/orders-service/pom.xml test
 mvn -f microservices/audit-service/pom.xml test
 ```
 
+Para executar a jornada E2E com o ambiente integrado ativo:
+
+```bash
+npx playwright install chromium
+docker compose up --build --detach --wait
+npm run test:e2e
+```
+
 ## Documentação
 
 - [Plano da PoC](docs/POC-PLAN.md)
