@@ -1,0 +1,19 @@
+{{- range $name, $component := .Values.components }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: {{ $component.healthPath | quote }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    {{- include "operations-hub.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: {{ $name }} }
+  ports:
+    - name: http
+      port: {{ $component.port }}
+      targetPort: http
+{{- end }}

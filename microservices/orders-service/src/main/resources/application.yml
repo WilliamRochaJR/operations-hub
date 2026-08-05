@@ -1,0 +1,29 @@
+server:
+  port: ${PORT:8081}
+spring:
+  application:
+    name: orders-service
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/operations_hub}
+    username: ${DATABASE_USER:operations}
+    password: ${DATABASE_PASSWORD:operations}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.default_schema: orders
+  flyway:
+    default-schema: orders
+    create-schemas: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+management:
+  endpoints.web.exposure.include: health,info
+  endpoint.health.probes.enabled: true
+app:
+  kafka:
+    orders-topic: orders.events.v1

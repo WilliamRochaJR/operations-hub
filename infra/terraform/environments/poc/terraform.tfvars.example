@@ -1,0 +1,6 @@
+aws_region         = "us-east-1"
+project_name       = "operations-hub"
+environment        = "poc"
+kubernetes_version = "1.33"
+monthly_budget_usd = 100
+alert_email        = "seu-email@example.com"

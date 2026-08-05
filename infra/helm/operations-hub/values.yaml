@@ -1,0 +1,59 @@
+global:
+  imageRegistry: "000000000000.dkr.ecr.us-east-1.amazonaws.com"
+  imageTag: latest
+  imagePullPolicy: IfNotPresent
+
+database:
+  host: "replace-with-rds-endpoint"
+  port: 5432
+  name: operations_hub
+  secretName: operations-hub-database
+  usernameKey: username
+  passwordKey: password
+
+kafka:
+  bootstrapServers: "replace-with-msk-bootstrap-brokers"
+  authentication: iam
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  host: ""
+
+components:
+  web:
+    image: operations-hub-web
+    replicas: 1
+    port: 8080
+    healthPath: /health
+    resources:
+      requests: { cpu: 25m, memory: 32Mi }
+      limits: { cpu: 100m, memory: 64Mi }
+  bff:
+    image: operations-hub-bff
+    replicas: 1
+    port: 3000
+    healthPath: /api/health
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { cpu: 250m, memory: 256Mi }
+  orders-service:
+    image: operations-hub-orders-service
+    replicas: 1
+    port: 8081
+    healthPath: /actuator/health/readiness
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+  audit-service:
+    image: operations-hub-audit-service
+    replicas: 1
+    port: 8082
+    healthPath: /actuator/health/readiness
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }

@@ -1,0 +1,77 @@
+name: Deploy PoC to AWS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-poc
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment: poc
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+      IMAGE_TAG: ${{ github.sha }}
+      NAMESPACE: operations-hub
+    steps:
+      - uses: actions/checkout@v6
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push immutable images
+        run: |
+          docker build --build-arg VITE_API_URL=/api -f apps/web/Dockerfile -t "$ECR_REGISTRY/operations-hub-web:$IMAGE_TAG" .
+          docker build -f apps/bff/Dockerfile -t "$ECR_REGISTRY/operations-hub-bff:$IMAGE_TAG" .
+          docker build -t "$ECR_REGISTRY/operations-hub-orders-service:$IMAGE_TAG" microservices/orders-service
+          docker build -t "$ECR_REGISTRY/operations-hub-audit-service:$IMAGE_TAG" microservices/audit-service
+          docker push "$ECR_REGISTRY/operations-hub-web:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/operations-hub-bff:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/operations-hub-orders-service:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/operations-hub-audit-service:$IMAGE_TAG"
+
+      - name: Connect to EKS
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+
+      - name: Synchronize database secret
+        env:
+          DATABASE_SECRET_ARN: ${{ secrets.DATABASE_SECRET_ARN }}
+        run: |
+          secret_json="$(aws secretsmanager get-secret-value --secret-id "$DATABASE_SECRET_ARN" --query SecretString --output text)"
+          database_user="$(jq -r .username <<<"$secret_json")"
+          database_password="$(jq -r .password <<<"$secret_json")"
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic operations-hub-database \
+            --namespace "$NAMESPACE" \
+            --from-literal=username="$database_user" \
+            --from-literal=password="$database_password" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy the same SHA with Helm
+        run: |
+          helm upgrade --install operations-hub infra/helm/operations-hub \
+            --namespace "$NAMESPACE" \
+            --values infra/helm/operations-hub/values-poc.yaml \
+            --set-string global.imageRegistry="$ECR_REGISTRY" \
+            --set-string global.imageTag="$IMAGE_TAG" \
+            --set-string database.host="${{ vars.RDS_ENDPOINT }}" \
+            --set-string kafka.bootstrapServers="${{ vars.MSK_BOOTSTRAP_SERVERS }}" \
+            --atomic --timeout 10m
+
+      - name: Verify rollouts
+        run: |
+          kubectl rollout status deployment/web -n "$NAMESPACE" --timeout=5m
+          kubectl rollout status deployment/bff -n "$NAMESPACE" --timeout=5m
+          kubectl rollout status deployment/orders-service -n "$NAMESPACE" --timeout=5m
+          kubectl rollout status deployment/audit-service -n "$NAMESPACE" --timeout=5m

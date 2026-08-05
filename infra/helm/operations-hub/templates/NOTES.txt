@@ -1,0 +1,2 @@
+Obtenha o endereço público com:
+kubectl get ingress operations-hub -n {{ .Release.Namespace }}

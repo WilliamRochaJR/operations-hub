@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: operations-hub-config
+  labels:
+    {{- include "operations-hub.labels" . | nindent 4 }}
+data:
+  DATABASE_URL: {{ printf "jdbc:postgresql://%s:%v/%s" .Values.database.host .Values.database.port .Values.database.name | quote }}
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.kafka.bootstrapServers | quote }}
+  ORDERS_SERVICE_URL: "http://orders-service:8081"
+  AUDIT_SERVICE_URL: "http://audit-service:8082"
