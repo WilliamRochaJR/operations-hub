@@ -2,13 +2,21 @@
   "name": "operations-hub",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["apps/*"],
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:e2e": "playwright test",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:web": "npm run dev --workspace @operations-hub/web",
     "dev:bff": "npm run start:dev --workspace @operations-hub/bff"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
+  }
 }
