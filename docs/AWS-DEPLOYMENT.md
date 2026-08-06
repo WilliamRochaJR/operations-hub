@@ -25,14 +25,19 @@ flowchart LR
     orders -. OrderCreated .-> msk[(MSK Serverless)]
     msk -. evento .-> audit
 
-    secrets[Secrets Manager] -. credenciais .-> gha
+    secrets[Secrets Manager] -. credencial RDS .-> gha
+    orders -. Pod Identity produtora .-> msk
+    audit -. Pod Identity consumidora .-> msk
 ```
 
 ## O que já está codificado
 
 ```text
 infra/
-├── terraform/environments/poc/  # VPC, EKS, ECR, RDS, MSK, Secrets e Budget
+├── terraform/
+│   ├── bootstrap/state/          # bucket S3 e locking
+│   ├── bootstrap/github-oidc/    # confiança GitHub e role temporária
+│   └── environments/poc/         # VPC, EKS, ECR, RDS, MSK e Budget
 └── helm/operations-hub/         # Deployments, Services, ConfigMap e Ingress
 ```
 
@@ -45,9 +50,10 @@ O Terraform cria:
 - quatro repositórios ECR;
 - RDS PostgreSQL privado;
 - MSK Serverless com autenticação IAM;
-- segredo do banco no Secrets Manager;
+- senha gerada e gerenciada pelo RDS no Secrets Manager;
 - orçamento mensal opcional;
-- identidade usada pelo AWS Load Balancer Controller.
+- identidade usada pelo AWS Load Balancer Controller;
+- identidades separadas para Orders e Audit.
 
 O Helm instala `web`, `bff`, `orders-service` e `audit-service`. O Ingress envia `/api` ao BFF e as demais rotas ao React. RDS e MSK não rodam dentro do Kubernetes.
 
@@ -57,29 +63,62 @@ O Helm instala `web`, `bff`, `orders-service` e `audit-service`. O Ingress envia
 - AWS CLI autenticado por SSO ou outra credencial temporária;
 - Terraform, Docker, `kubectl` e Helm;
 - permissão para VPC, EKS, EC2, IAM, ECR, RDS, MSK, Secrets Manager e Budgets;
-- um bucket S3 separado para o state do Terraform;
-- um papel IAM com confiança OIDC para o GitHub Actions.
+- autorização para executar o bootstrap limitado de S3 e IAM.
 
 Confira a identidade antes de qualquer mudança:
 
 ```bash
-aws sts get-caller-identity
+AWS_PROFILE=operations-hub aws sts get-caller-identity
 aws configure get region
 ```
 
 ## 1. Preparar o state remoto
 
-Crie uma vez um bucket S3 com versionamento e bloqueio de acesso público. O bucket de state não faz parte deste mesmo Terraform para evitar dependência circular.
+O primeiro bootstrap cria somente o bucket S3 versionado, criptografado e sem acesso público. Ele começa com state local devido à dependência circular:
 
 ```bash
-cd infra/terraform/environments/poc
+cd infra/terraform/bootstrap/state
+cp terraform.tfvars.example terraform.tfvars
+terraform init -backend=false
+terraform plan -out=state.tfplan
+terraform apply state.tfplan
+
+cp backend.hcl.example backend.hcl
+terraform init -migrate-state -backend-config=backend.hcl
+```
+
+Esse é o primeiro `apply`, limitado ao bucket de state. O recurso possui `prevent_destroy`; a remoção exige uma decisão explícita.
+
+## 2. Criar a confiança OIDC do GitHub
+
+```bash
+cd ../github-oidc
+cp backend.hcl.example backend.hcl
+terraform init -backend-config=backend.hcl
+terraform plan -out=github-oidc.tfplan
+terraform apply github-oidc.tfplan
+terraform output github_actions_role_arn
+```
+
+A trust policy exige o subject exato:
+
+```text
+repo:WilliamRochaJR/operations-hub:environment:poc
+```
+
+Se a conta já possuir o provider `token.actions.githubusercontent.com`, ele deve ser importado ou referenciado; não crie outro provider igual.
+
+## 3. Preparar a infraestrutura da PoC
+
+```bash
+cd ../../environments/poc
 cp backend.hcl.example backend.hcl
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edite os dois arquivos locais. Eles são ignorados pelo Git. Defina especialmente região, e-mail de alerta e limite mensal.
+Edite os arquivos locais, incluindo os outputs de nome e ARN da role OIDC. Eles são ignorados pelo Git.
 
-## 2. Revisar antes de criar
+## 4. Revisar antes de criar
 
 ```bash
 terraform init -backend-config=backend.hcl
@@ -97,7 +136,7 @@ terraform apply poc.tfplan
 
 O `apply` não foi executado durante a criação desta estrutura.
 
-## 3. Conectar o kubectl
+## 5. Conectar o kubectl
 
 ```bash
 aws eks update-kubeconfig \
@@ -106,7 +145,7 @@ aws eks update-kubeconfig \
 kubectl get nodes
 ```
 
-## 4. Instalar o AWS Load Balancer Controller
+## 6. Instalar o AWS Load Balancer Controller
 
 Terraform prepara a identidade do controller, mas o componente Kubernetes é instalado pelo Helm:
 
@@ -122,7 +161,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
 
 O papel usa uma policy AWS ampla para manter a primeira PoC legível. Essa simplificação está marcada no código e deve ser substituída pela policy mínima oficial antes de qualquer uso produtivo.
 
-## 5. Publicar as imagens
+## 7. Publicar as imagens
 
 Cada imagem recebe o SHA do commit; `latest` não é usado no CD.
 
@@ -148,17 +187,17 @@ O workflow `.github/workflows/deploy-poc.yml` automatiza esse processo. Configur
 | Variable | `ECR_REGISTRY` | `<account>.dkr.ecr.<region>.amazonaws.com` |
 | Variable | `RDS_ENDPOINT` | output `rds_endpoint` |
 | Variable | `MSK_BOOTSTRAP_SERVERS` | output `msk_bootstrap_brokers_sasl_iam` |
-| Secret | `DATABASE_SECRET_ARN` | output `database_secret_arn` |
+| Variable | `DATABASE_SECRET_ARN` | output `database_secret_arn` |
 
 O React é construído com `VITE_API_URL=/api`, portanto usa a mesma origem pública do ALB. O navegador não acessa diretamente os microsserviços.
 
-## 6. Segredo do banco
+## 8. Segredo do banco
 
-Durante o deploy, o workflow lê o JSON no Secrets Manager e cria/atualiza o Secret `operations-hub-database` no namespace. A senha não aparece em `values.yaml`, logs intencionais ou argumentos do Helm.
+O próprio RDS gera, armazena e gerencia a senha master no Secrets Manager. O Terraform mantém somente o ARN. Durante o deploy, o workflow lê o JSON e cria/atualiza o Secret `operations-hub-database` no namespace. A senha não aparece em `values.yaml`, logs intencionais ou argumentos do Helm.
 
-Em uma evolução de produção, essa sincronização deve migrar para External Secrets Operator ou Secrets Store CSI Driver com Pod Identity.
+Essa sincronização ocorre no deploy e não acompanha rotação continuamente. Enquanto a PoC for temporária, execute novamente o workflow após uma rotação. Antes de manter o ambiente ativo por longo prazo, adote External Secrets Operator ou Secrets Store CSI Driver com uma estratégia de restart dos Pods.
 
-## 7. MSK e autenticação IAM
+## 9. MSK e autenticação IAM
 
 Localmente, Spring usa Kafka sem autenticação. Na AWS, o chart ativa o profile Spring `aws`, que configura:
 
@@ -169,9 +208,9 @@ sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;
 sasl.client.callback.handler.class=software.amazon.msk.auth.iam.IAMClientCallbackHandler
 ```
 
-Os dois projetos Spring incluem `software.amazon.msk:aws-msk-iam-auth`. Para a PoC, a permissão Kafka está no papel dos nodes; a evolução recomendada é uma identidade exclusiva para cada workload.
+Os dois projetos Spring incluem `software.amazon.msk:aws-msk-iam-auth`. Orders e Audit usam ServiceAccounts e EKS Pod Identities diferentes. Orders possui permissão de escrita no tópico; Audit possui leitura e acesso apenas ao seu consumer group. Web e BFF não recebem permissão Kafka.
 
-## 8. Validar o deploy
+## 10. Validar o deploy
 
 ```bash
 kubectl get pods,services,ingress -n operations-hub
@@ -191,7 +230,7 @@ curl --fail "$APP_URL/api/health"
 
 Depois, criar um pedido pela interface confirma o caminho completo RDS → outbox → MSK → Audit.
 
-## 9. Destruir e controlar custos
+## 11. Destruir e controlar custos
 
 Remova primeiro o release e confirme que o ALB desapareceu; depois destrua o Terraform:
 

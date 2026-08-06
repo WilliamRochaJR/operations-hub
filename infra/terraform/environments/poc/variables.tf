@@ -40,3 +40,15 @@ variable "monthly_budget_usd" {
   type    = number
   default = 100
 }
+
+variable "github_actions_role_name" {
+  description = "Nome da role criada pelo bootstrap OIDC; vazio desabilita a integração com GitHub."
+  type        = string
+  default     = ""
+}
+
+variable "github_actions_role_arn" {
+  description = "ARN da role criada pelo bootstrap OIDC; vazio desabilita o acesso ao EKS."
+  type        = string
+  default     = ""
+}

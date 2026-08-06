@@ -20,6 +20,8 @@ spec:
         app.kubernetes.io/name: {{ $name }}
         {{- include "operations-hub.labels" $ | nindent 8 }}
     spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: {{ hasSuffix "-service" $name }}
       securityContext:
         runAsNonRoot: true
         seccompProfile: { type: RuntimeDefault }

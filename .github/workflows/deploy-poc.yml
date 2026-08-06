@@ -34,17 +34,27 @@ jobs:
           docker build -f apps/bff/Dockerfile -t "$ECR_REGISTRY/operations-hub-bff:$IMAGE_TAG" .
           docker build -t "$ECR_REGISTRY/operations-hub-orders-service:$IMAGE_TAG" microservices/orders-service
           docker build -t "$ECR_REGISTRY/operations-hub-audit-service:$IMAGE_TAG" microservices/audit-service
-          docker push "$ECR_REGISTRY/operations-hub-web:$IMAGE_TAG"
-          docker push "$ECR_REGISTRY/operations-hub-bff:$IMAGE_TAG"
-          docker push "$ECR_REGISTRY/operations-hub-orders-service:$IMAGE_TAG"
-          docker push "$ECR_REGISTRY/operations-hub-audit-service:$IMAGE_TAG"
+
+          push_if_missing() {
+            repository="$1"
+            if aws ecr describe-images --repository-name "$repository" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+              echo "$repository:$IMAGE_TAG already exists; reusing immutable image"
+            else
+              docker push "$ECR_REGISTRY/$repository:$IMAGE_TAG"
+            fi
+          }
+
+          push_if_missing operations-hub-web
+          push_if_missing operations-hub-bff
+          push_if_missing operations-hub-orders-service
+          push_if_missing operations-hub-audit-service
 
       - name: Connect to EKS
         run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
 
       - name: Synchronize database secret
         env:
-          DATABASE_SECRET_ARN: ${{ secrets.DATABASE_SECRET_ARN }}
+          DATABASE_SECRET_ARN: ${{ vars.DATABASE_SECRET_ARN }}
         run: |
           secret_json="$(aws secretsmanager get-secret-value --secret-id "$DATABASE_SECRET_ARN" --query SecretString --output text)"
           database_user="$(jq -r .username <<<"$secret_json")"

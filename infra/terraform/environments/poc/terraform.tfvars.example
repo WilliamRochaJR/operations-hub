@@ -4,3 +4,5 @@ environment        = "poc"
 kubernetes_version = "1.33"
 monthly_budget_usd = 100
 alert_email        = "seu-email@example.com"
+github_actions_role_name = "operations-hub-github-poc"
+github_actions_role_arn  = "arn:aws:iam::123456789012:role/operations-hub-github-poc"
