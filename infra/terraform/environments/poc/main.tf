@@ -14,28 +14,6 @@ locals {
   }
 }
 
-resource "aws_iam_policy" "msk_client" {
-  name        = "${local.name}-msk-client"
-  description = "Permite que o walking skeleton produza e consuma eventos no MSK"
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Resource = "*"
-      Action = [
-        "kafka-cluster:Connect",
-        "kafka-cluster:DescribeCluster",
-        "kafka-cluster:ReadData",
-        "kafka-cluster:WriteData",
-        "kafka-cluster:CreateTopic",
-        "kafka-cluster:DescribeTopic",
-        "kafka-cluster:AlterGroup",
-        "kafka-cluster:DescribeGroup"
-      ]
-    }]
-  })
-}
-
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "6.6.1"
@@ -87,13 +65,24 @@ module "eks" {
       max_size       = 2
       desired_size   = 1
       capacity_type  = "SPOT"
-      iam_role_additional_policies = {
-        msk_client = aws_iam_policy.msk_client.arn
-      }
     }
   }
 
   enable_cluster_creator_admin_permissions = true
+
+  access_entries = var.github_actions_role_arn == "" ? {} : {
+    github_actions = {
+      principal_arn = var.github_actions_role_arn
+      policy_associations = {
+        cluster = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  }
 }
 
 resource "aws_ecr_repository" "application" {
@@ -120,24 +109,6 @@ resource "aws_ecr_lifecycle_policy" "application" {
       }
       action = { type = "expire" }
     }]
-  })
-}
-
-resource "random_password" "database" {
-  length  = 32
-  special = false
-}
-
-resource "aws_secretsmanager_secret" "database" {
-  name                    = "${local.name}/database"
-  recovery_window_in_days = 0
-}
-
-resource "aws_secretsmanager_secret_version" "database" {
-  secret_id = aws_secretsmanager_secret.database.id
-  secret_string = jsonencode({
-    username = "operations"
-    password = random_password.database.result
   })
 }
 
@@ -171,22 +142,22 @@ resource "aws_security_group" "data" {
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier                 = local.name
-  engine                     = "postgres"
-  instance_class             = var.db_instance_class
-  allocated_storage          = 20
-  max_allocated_storage      = 50
-  storage_encrypted          = true
-  db_name                    = "operations_hub"
-  username                   = "operations"
-  password                   = random_password.database.result
-  db_subnet_group_name       = module.vpc.database_subnet_group_name
-  vpc_security_group_ids     = [aws_security_group.data.id]
-  publicly_accessible        = false
-  backup_retention_period    = 1
-  deletion_protection        = false
-  skip_final_snapshot        = true
-  auto_minor_version_upgrade = true
+  identifier                  = local.name
+  engine                      = "postgres"
+  instance_class              = var.db_instance_class
+  allocated_storage           = 20
+  max_allocated_storage       = 50
+  storage_encrypted           = true
+  db_name                     = "operations_hub"
+  username                    = "operations"
+  manage_master_user_password = true
+  db_subnet_group_name        = module.vpc.database_subnet_group_name
+  vpc_security_group_ids      = [aws_security_group.data.id]
+  publicly_accessible         = false
+  backup_retention_period     = 1
+  deletion_protection         = false
+  skip_final_snapshot         = true
+  auto_minor_version_upgrade  = true
 }
 
 resource "aws_msk_serverless_cluster" "this" {

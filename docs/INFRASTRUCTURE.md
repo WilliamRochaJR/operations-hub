@@ -186,10 +186,11 @@ infra/
 ├── helm/
 │   └── operations-hub/
 └── terraform/
-    ├── modules/
+    ├── bootstrap/
+    │   ├── state/
+    │   └── github-oidc/
     └── environments/
-        ├── development/
-        └── production/
+        └── poc/
 ```
 
 Princípios:
@@ -200,6 +201,8 @@ Princípios:
 - recursos recebem tags de projeto, ambiente e propriedade;
 - o procedimento de destruição é documentado para controlar custos;
 - segredos e arquivos de state nunca são versionados.
+- aplicações no EKS recebem identidades por workload, não pelo papel do node;
+- a senha master é gerada e gerenciada pelo RDS no Secrets Manager.
 
 ## 8. Conectividade
 

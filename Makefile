@@ -24,6 +24,10 @@ logs:
 
 infra-validate:
 	terraform fmt -check -recursive infra/terraform
+	terraform -chdir=infra/terraform/bootstrap/state init -backend=false
+	terraform -chdir=infra/terraform/bootstrap/state validate
+	terraform -chdir=infra/terraform/bootstrap/github-oidc init -backend=false
+	terraform -chdir=infra/terraform/bootstrap/github-oidc validate
 	terraform -chdir=infra/terraform/environments/poc init -backend=false
 	terraform -chdir=infra/terraform/environments/poc validate
 	docker run --rm -v "$(CURDIR):/workspace" -w /workspace alpine/helm:3.18.6 lint infra/helm/operations-hub

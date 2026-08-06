@@ -15,6 +15,7 @@ Os ADRs registram decisões arquiteturais relevantes, seu contexto e suas conseq
 |---|---|---|
 | [ADR-0001](0001-integration-first-walking-skeleton.md) | Começar por um walking skeleton integrado | Aceito |
 | [ADR-0002](0002-kafka-in-first-vertical-slice.md) | Integrar Kafka na primeira fatia vertical | Aceito |
+| [ADR-0003](0003-aws-identity-and-secret-management.md) | Usar identidades temporárias e segredos gerenciados na AWS | Aceito |
 
 ## Modelo
 
