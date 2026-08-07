@@ -30,7 +30,8 @@ Esta matriz torna explícito quando e como cada tecnologia planejada entra no si
 | AWS EKS | execução Kubernetes | workloads disponíveis no ambiente remoto |
 | AWS ECR | registro de imagens | imagens publicadas pelo CI |
 | AWS RDS | PostgreSQL remoto | Orders e Audit acessam somente seus dados |
-| AWS MSK | Kafka remoto | produção e consumo do evento na AWS |
+| Kafka KRaft no EKS | Kafka remoto efêmero | produção e consumo do evento na AWS sem MSK ocioso |
+| AWS MSK | evolução de produção | decisão documentada, não provisionada na PoC econômica |
 | GitHub Actions | CI/CD | teste, build, publicação, deploy e smoke test |
 | JUnit e Mockito | unidade dos serviços | regras, outbox e idempotência testadas |
 | Testcontainers | integração real | PostgreSQL e Kafka exercitados no CI |

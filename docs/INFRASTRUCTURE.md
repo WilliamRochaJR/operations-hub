@@ -114,12 +114,12 @@ flowchart LR
         bff[NestJS BFF]
         orders[Orders Service]
         audit[Audit Service]
+        kafka[(Kafka KRaft)]
     end
 
     rds[(Amazon RDS)]
     ecr[(Amazon ECR)]
     cloudwatch[CloudWatch]
-    msk[(Amazon MSK)]
 
     user -->|"HTTPS"| loadBalancer
     loadBalancer -->|"Encaminha"| ingress
@@ -129,8 +129,8 @@ flowchart LR
     bff -->|"Auditoria"| audit
     orders -->|"Orders DB"| rds
     audit -->|"Audit DB"| rds
-    orders -.->|"Publica eventos"| msk
-    msk -.->|"Entrega eventos"| audit
+    orders -.->|"Publica eventos"| kafka
+    kafka -.->|"Entrega eventos"| audit
     ecr -.->|"Fornece imagens"| web
     ecr -.->|"Fornece imagens"| bff
     ecr -.->|"Fornece imagens"| orders
@@ -155,15 +155,16 @@ Armazena as imagens Docker de web, BFF e API. As imagens serão identificadas pe
 
 Fornece o PostgreSQL remoto, com backups, conexão criptografada e acesso restrito à rede da aplicação. Credenciais não serão armazenadas no repositório.
 
-### Amazon MSK Serverless
+### Kafka efêmero no EKS
 
-Fornece Kafka gerenciado para o ambiente AWS. Orders Service produz eventos e Audit Service os consome pela rede privada, com autenticação IAM. Antes do provisionamento serão confirmados disponibilidade na região escolhida e impacto no orçamento.
+Uma réplica Kafka em KRaft comprova produção, consumo, outbox e idempotência sem a cobrança-base do MSK Serverless. O storage é efêmero e não representa a configuração de produção. Amazon MSK com autenticação IAM permanece como evolução planejada.
 
 No ambiente local será usado um broker Kafka em container. Os contratos e nomes de tópicos permanecem equivalentes entre ambientes; autenticação e endereços são configuração externa.
 
 ### Rede e entrada
 
-- VPC com sub-redes públicas para entrada e privadas para workloads e banco;
+- VPC com sub-redes públicas para os nodes efêmeros e sub-redes privadas de banco;
+- sem NAT Gateway na PoC temporária;
 - Security Groups com acesso mínimo necessário;
 - Application Load Balancer integrado ao Ingress;
 - TLS com certificado gerenciado;
@@ -247,11 +248,11 @@ A PoC documentará práticas de produção sem fingir uma escala inexistente:
 
 ## 12. Controle de custos
 
-EKS, RDS e MSK possuem custo mesmo com pouco tráfego. Antes de criar o ambiente serão definidos:
+EKS, RDS, EC2, ALB e IPv4 podem gerar custo mesmo com pouco tráfego. O ADR-0004 define:
 
 - orçamento mensal e alertas;
 - tamanho mínimo aceitável dos recursos;
-- horário ou procedimento de desligamento do que for temporário;
+- TTL padrão de 20 minutos após o smoke test, cleanup no job e watchdog;
 - política de retenção de logs e imagens;
 - comando documentado para destruir todo o ambiente da PoC.
 

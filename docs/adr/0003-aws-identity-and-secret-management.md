@@ -5,6 +5,7 @@
 - **Responsáveis:** equipe da PoC Operations Hub
 - **Substitui:** simplificações iniciais de IAM documentadas na infraestrutura
 - **Substituído por:** —
+- **Parcialmente substituído por:** ADR-0004 nos itens de deploy efêmero e Kafka na AWS
 
 ## Contexto
 

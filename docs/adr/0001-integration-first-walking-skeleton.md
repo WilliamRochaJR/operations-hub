@@ -5,6 +5,7 @@
 - **Responsáveis:** projeto Operations Hub
 - **Substitui:** nenhuma decisão
 - **Substituído por:** —
+- **Decisão AWS parcialmente substituída por:** ADR-0004
 
 ## Contexto
 
@@ -137,6 +138,8 @@ Inicialmente não serão exigidos:
 - ambientes efêmeros por pull request.
 
 Esses itens somente serão adicionados quando resolverem um risco ou demonstrarem uma competência prioritária.
+
+O ADR-0004 substitui a topologia AWS inicial: Kafka continua integrado, mas roda temporariamente em KRaft no EKS; MSK permanece como evolução de produção. O mesmo ADR passa a adotar ambiente efêmero selecionado manualmente por PR devido ao custo observado.
 
 ## Estratégia de evolução
 

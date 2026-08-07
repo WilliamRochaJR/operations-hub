@@ -1,0 +1,114 @@
+name: Cleanup expired PoC
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Destroy immediately even if the lease is not expired
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ephemeral-poc
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    environment: poc
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_kubernetes_version: "1.36"
+      TF_VAR_monthly_budget_usd: "10"
+      TF_VAR_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
+      TF_VAR_github_actions_role_name: operations-hub-github-poc
+      TF_VAR_github_actions_role_arn: ${{ vars.AWS_ROLE_ARN }}
+
+    steps:
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check cleanup lease
+        id: lease
+        env:
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          state_bucket="operations-hub-terraform-state-${account_id}"
+          lease="$(aws s3 cp "s3://${state_bucket}/operations-hub/leases/poc.json" - 2>/dev/null || true)"
+          if [[ -z "$lease" ]]; then
+            if [[ "$FORCE" == "true" ]]; then
+              echo "No lease found; forcing cleanup with the selected main revision"
+              {
+                echo "destroy=true"
+                echo "infra_sha=$GITHUB_SHA"
+                echo "state_bucket=$state_bucket"
+              } >> "$GITHUB_OUTPUT"
+            else
+              echo "No active lease"
+              echo "destroy=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          expires_at="$(jq -r .expires_at <<<"$lease")"
+          infra_sha="$(jq -r .infra_sha <<<"$lease")"
+          now="$(date +%s)"
+          if [[ "$FORCE" == "true" || "$now" -ge "$expires_at" ]]; then
+            {
+              echo "destroy=true"
+              echo "infra_sha=$infra_sha"
+              echo "state_bucket=$state_bucket"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "Lease remains valid for $(( expires_at - now )) seconds"
+            echo "destroy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout trusted infrastructure revision
+        if: steps.lease.outputs.destroy == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.lease.outputs.infra_sha }}
+
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.lease.outputs.destroy == 'true'
+        with: { terraform_version: 1.12.2 }
+      - uses: azure/setup-kubectl@v4
+        if: steps.lease.outputs.destroy == 'true'
+        with: { version: v1.36.0 }
+      - uses: azure/setup-helm@v4
+        if: steps.lease.outputs.destroy == 'true'
+        with: { version: v3.18.6 }
+
+      - name: Destroy expired environment
+        if: steps.lease.outputs.destroy == 'true'
+        working-directory: infra/terraform/environments/poc
+        env:
+          STATE_BUCKET: ${{ steps.lease.outputs.state_bucket }}
+        run: |
+          aws eks update-kubeconfig --name operations-hub-poc --region "$AWS_REGION" 2>/dev/null || true
+          helm uninstall operations-hub --namespace operations-hub --wait --timeout 10m 2>/dev/null || true
+          helm uninstall aws-load-balancer-controller --namespace kube-system --wait --timeout 5m 2>/dev/null || true
+
+          terraform init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=operations-hub/poc/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          terraform destroy -auto-approve -input=false
+          aws s3 rm "s3://${STATE_BUCKET}/operations-hub/leases/poc.json"

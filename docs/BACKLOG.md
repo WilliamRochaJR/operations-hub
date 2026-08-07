@@ -30,8 +30,10 @@
 - imagens são publicadas no ECR;
 - Helm instala os componentes no EKS;
 - Orders Service acessa o RDS;
-- serviços produzem e consomem eventos no Amazon MSK;
-- merge em `main` atualiza o ambiente de desenvolvimento;
+- serviços produzem e consomem eventos no Kafka KRaft efêmero;
+- workflow manual publica somente o PR explicitamente escolhido;
+- ambiente saudável permanece por 20 minutos e é destruído automaticamente;
+- watchdog remove ambientes com lease expirado;
 - migration e smoke test fazem parte do deploy;
 - logs permitem rastrear uma requisição completa.
 

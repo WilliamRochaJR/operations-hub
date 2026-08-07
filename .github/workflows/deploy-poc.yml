@@ -1,60 +1,163 @@
-name: Deploy PoC to AWS
+name: Deploy ephemeral PoC from PR
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR from this repository to deploy
+        required: true
+        type: string
+      ttl_minutes:
+        description: Minutes to keep the healthy application online
+        required: true
+        default: "20"
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
   id-token: write
 
 concurrency:
-  group: deploy-poc
+  group: ephemeral-poc
   cancel-in-progress: false
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     environment: poc
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
-      IMAGE_TAG: ${{ github.sha }}
+      AWS_REGION: us-east-1
+      CLUSTER_NAME: operations-hub-poc
       NAMESPACE: operations-hub
+      TF_IN_AUTOMATION: "true"
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_kubernetes_version: "1.36"
+      TF_VAR_monthly_budget_usd: "10"
+      TF_VAR_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
+      TF_VAR_github_actions_role_name: operations-hub-github-poc
+      TF_VAR_github_actions_role_arn: ${{ vars.AWS_ROLE_ARN }}
+
     steps:
-      - uses: actions/checkout@v6
-      - uses: aws-actions/configure-aws-credentials@v5
+      - name: Validate PR and TTL
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          TTL_MINUTES: ${{ inputs.ttl_minutes }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "pr_number must be numeric"; exit 1; }
+          [[ "$TTL_MINUTES" =~ ^[0-9]+$ ]] || { echo "ttl_minutes must be numeric"; exit 1; }
+          (( TTL_MINUTES >= 5 && TTL_MINUTES <= 60 )) || { echo "ttl_minutes must be between 5 and 60"; exit 1; }
+
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          [[ "$(jq -r .state <<<"$pr_json")" == "open" ]] || { echo "PR must be open"; exit 1; }
+          [[ "$(jq -r .head.repo.full_name <<<"$pr_json")" == "$GITHUB_REPOSITORY" ]] || { echo "Fork PRs are not deployable"; exit 1; }
+
+          {
+            echo "app_sha=$(jq -r .head.sha <<<"$pr_json")"
+            echo "pr_number=$PR_NUMBER"
+            echo "ttl_minutes=$TTL_MINUTES"
+            echo "infra_sha=$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted infrastructure
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.target.outputs.infra_sha }}
+
+      - name: Configure temporary AWS credentials
+        id: aws
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create cleanup lease before provisioning
+        env:
+          APP_SHA: ${{ steps.target.outputs.app_sha }}
+          INFRA_SHA: ${{ steps.target.outputs.infra_sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          state_bucket="operations-hub-terraform-state-${account_id}"
+          expires_at="$(( $(date +%s) + 7200 ))"
+          jq -n \
+            --arg app_sha "$APP_SHA" \
+            --arg infra_sha "$INFRA_SHA" \
+            --arg pr_number "$PR_NUMBER" \
+            --argjson expires_at "$expires_at" \
+            '{app_sha:$app_sha,infra_sha:$infra_sha,pr_number:$pr_number,expires_at:$expires_at,phase:"provisioning"}' \
+            | aws s3 cp - "s3://${state_bucket}/operations-hub/leases/poc.json"
+          echo "STATE_BUCKET=$state_bucket" >> "$GITHUB_ENV"
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.12.2 }
+      - uses: azure/setup-kubectl@v4
+        with: { version: v1.36.0 }
+      - uses: azure/setup-helm@v4
+        with: { version: v3.18.6 }
+
+      - name: Provision ephemeral infrastructure
+        working-directory: infra/terraform/environments/poc
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=operations-hub/poc/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          terraform plan -input=false -out=poc.tfplan
+          terraform apply -input=false poc.tfplan
+
+          {
+            echo "ECR_REGISTRY=$(terraform output -json ecr_repository_urls | jq -r '.web | split("/")[0]')"
+            echo "RDS_ENDPOINT=$(terraform output -raw rds_endpoint)"
+            echo "DATABASE_SECRET_ARN=$(terraform output -raw database_secret_arn)"
+          } >> "$GITHUB_ENV"
+
+      - name: Checkout PR application code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.target.outputs.app_sha }}
+          path: pr-source
+
       - uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push immutable images
+      - name: Build and push immutable PR images
+        env:
+          IMAGE_TAG: pr-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.app_sha }}
         run: |
-          docker build --build-arg VITE_API_URL=/api -f apps/web/Dockerfile -t "$ECR_REGISTRY/operations-hub-web:$IMAGE_TAG" .
-          docker build -f apps/bff/Dockerfile -t "$ECR_REGISTRY/operations-hub-bff:$IMAGE_TAG" .
-          docker build -t "$ECR_REGISTRY/operations-hub-orders-service:$IMAGE_TAG" microservices/orders-service
-          docker build -t "$ECR_REGISTRY/operations-hub-audit-service:$IMAGE_TAG" microservices/audit-service
+          docker build --build-arg VITE_API_URL=/api -f pr-source/apps/web/Dockerfile -t "$ECR_REGISTRY/operations-hub-web:$IMAGE_TAG" pr-source
+          docker build -f pr-source/apps/bff/Dockerfile -t "$ECR_REGISTRY/operations-hub-bff:$IMAGE_TAG" pr-source
+          docker build -t "$ECR_REGISTRY/operations-hub-orders-service:$IMAGE_TAG" pr-source/microservices/orders-service
+          docker build -t "$ECR_REGISTRY/operations-hub-audit-service:$IMAGE_TAG" pr-source/microservices/audit-service
 
-          push_if_missing() {
-            repository="$1"
-            if aws ecr describe-images --repository-name "$repository" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
-              echo "$repository:$IMAGE_TAG already exists; reusing immutable image"
+          for repository in web bff orders-service audit-service; do
+            if aws ecr describe-images --repository-name "operations-hub-${repository}" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+              echo "operations-hub-${repository}:$IMAGE_TAG already exists"
             else
-              docker push "$ECR_REGISTRY/$repository:$IMAGE_TAG"
+              docker push "$ECR_REGISTRY/operations-hub-${repository}:$IMAGE_TAG"
             fi
-          }
+          done
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
 
-          push_if_missing operations-hub-web
-          push_if_missing operations-hub-bff
-          push_if_missing operations-hub-orders-service
-          push_if_missing operations-hub-audit-service
-
-      - name: Connect to EKS
-        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+      - name: Connect to EKS and install ingress controller
+        run: |
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --version 3.5.0 \
+            --namespace kube-system \
+            --set clusterName="$CLUSTER_NAME" \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set replicaCount=1 \
+            --wait --timeout 5m
 
       - name: Synchronize database secret
-        env:
-          DATABASE_SECRET_ARN: ${{ vars.DATABASE_SECRET_ARN }}
         run: |
           secret_json="$(aws secretsmanager get-secret-value --secret-id "$DATABASE_SECRET_ARN" --query SecretString --output text)"
           database_user="$(jq -r .username <<<"$secret_json")"
@@ -66,20 +169,75 @@ jobs:
             --from-literal=password="$database_password" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy the same SHA with Helm
+      - name: Deploy walking skeleton
         run: |
           helm upgrade --install operations-hub infra/helm/operations-hub \
             --namespace "$NAMESPACE" \
             --values infra/helm/operations-hub/values-poc.yaml \
             --set-string global.imageRegistry="$ECR_REGISTRY" \
             --set-string global.imageTag="$IMAGE_TAG" \
-            --set-string database.host="${{ vars.RDS_ENDPOINT }}" \
-            --set-string kafka.bootstrapServers="${{ vars.MSK_BOOTSTRAP_SERVERS }}" \
+            --set-string database.host="$RDS_ENDPOINT" \
             --atomic --timeout 10m
 
-      - name: Verify rollouts
+          kubectl rollout status statefulset/kafka -n "$NAMESPACE" --timeout=5m
+          for deployment in web bff orders-service audit-service; do
+            kubectl rollout status "deployment/${deployment}" -n "$NAMESPACE" --timeout=5m
+          done
+
+      - name: Verify public endpoint
+        id: healthy
         run: |
-          kubectl rollout status deployment/web -n "$NAMESPACE" --timeout=5m
-          kubectl rollout status deployment/bff -n "$NAMESPACE" --timeout=5m
-          kubectl rollout status deployment/orders-service -n "$NAMESPACE" --timeout=5m
-          kubectl rollout status deployment/audit-service -n "$NAMESPACE" --timeout=5m
+          for _ in $(seq 1 60); do
+            endpoint="$(kubectl get ingress operations-hub -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+            if [[ -n "$endpoint" ]] && curl --fail --silent --show-error --max-time 10 "http://${endpoint}/api/health" >/dev/null; then
+              echo "Application healthy at http://${endpoint}"
+              echo "endpoint=http://${endpoint}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Public endpoint did not become healthy" >&2
+          exit 1
+
+      - name: Keep environment online for TTL
+        env:
+          TTL_MINUTES: ${{ steps.target.outputs.ttl_minutes }}
+          APP_SHA: ${{ steps.target.outputs.app_sha }}
+          INFRA_SHA: ${{ steps.target.outputs.infra_sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+        run: |
+          expires_at="$(( $(date +%s) + TTL_MINUTES * 60 ))"
+          jq -n \
+            --arg app_sha "$APP_SHA" \
+            --arg infra_sha "$INFRA_SHA" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg endpoint "${{ steps.healthy.outputs.endpoint }}" \
+            --argjson expires_at "$expires_at" \
+            '{app_sha:$app_sha,infra_sha:$infra_sha,pr_number:$pr_number,endpoint:$endpoint,expires_at:$expires_at,phase:"healthy"}' \
+            | aws s3 cp - "s3://${STATE_BUCKET}/operations-hub/leases/poc.json"
+          echo "PoC available for ${TTL_MINUTES} minutes: ${{ steps.healthy.outputs.endpoint }}"
+          sleep "$(( TTL_MINUTES * 60 ))"
+
+      - name: Checkout trusted infrastructure for cleanup
+        if: always() && steps.aws.outcome == 'success'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.target.outputs.infra_sha }}
+          clean: true
+
+      - name: Destroy ephemeral environment
+        if: always() && steps.aws.outcome == 'success'
+        working-directory: infra/terraform/environments/poc
+        run: |
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" 2>/dev/null || true
+          helm uninstall operations-hub --namespace "$NAMESPACE" --wait --timeout 10m 2>/dev/null || true
+          helm uninstall aws-load-balancer-controller --namespace kube-system --wait --timeout 5m 2>/dev/null || true
+
+          terraform init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=operations-hub/poc/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          terraform destroy -auto-approve -input=false
+          aws s3 rm "s3://${STATE_BUCKET}/operations-hub/leases/poc.json"

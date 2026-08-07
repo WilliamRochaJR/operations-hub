@@ -21,7 +21,7 @@ spec:
         {{- include "operations-hub.labels" $ | nindent 8 }}
     spec:
       serviceAccountName: {{ $name }}
-      automountServiceAccountToken: {{ hasSuffix "-service" $name }}
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile: { type: RuntimeDefault }
@@ -51,8 +51,10 @@ spec:
           {{- end }}
           {{- if hasSuffix "-service" $name }}
           env:
+            {{- if eq $.Values.kafka.authentication "iam" }}
             - name: SPRING_PROFILES_ACTIVE
               value: aws
+            {{- end }}
             - name: DATABASE_USER
               valueFrom:
                 secretKeyRef: { name: {{ $.Values.database.secretName }}, key: {{ $.Values.database.usernameKey }} }
