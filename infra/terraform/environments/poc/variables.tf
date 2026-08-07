@@ -22,7 +22,7 @@ variable "vpc_cidr" {
 variable "kubernetes_version" {
   description = "Versão suportada pelo EKS na região escolhida."
   type        = string
-  default     = "1.33"
+  default     = "1.36"
 }
 
 variable "db_instance_class" {

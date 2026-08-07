@@ -23,19 +23,16 @@ module "vpc" {
   azs  = local.azs
 
   public_subnets   = [for index, _ in local.azs : cidrsubnet(var.vpc_cidr, 8, index)]
-  private_subnets  = [for index, _ in local.azs : cidrsubnet(var.vpc_cidr, 8, index + 10)]
   database_subnets = [for index, _ in local.azs : cidrsubnet(var.vpc_cidr, 8, index + 20)]
 
-  enable_nat_gateway           = true
-  single_nat_gateway           = true
-  enable_dns_hostnames         = true
-  create_database_subnet_group = true
+  map_public_ip_on_launch            = true
+  enable_nat_gateway                 = false
+  enable_dns_hostnames               = true
+  create_database_subnet_group       = true
+  create_database_subnet_route_table = true
 
   public_subnet_tags = {
     "kubernetes.io/role/elb" = 1
-  }
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1
   }
 }
 
@@ -46,10 +43,11 @@ module "eks" {
   name                   = local.name
   kubernetes_version     = var.kubernetes_version
   endpoint_public_access = true
-  enable_irsa            = true
+  enable_irsa            = false
+  encryption_config      = null
 
   vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
+  subnet_ids = module.vpc.public_subnets
 
   addons = {
     coredns                = {}
@@ -125,14 +123,6 @@ resource "aws_security_group" "data" {
     security_groups = [module.eks.node_security_group_id]
   }
 
-  ingress {
-    description     = "MSK IAM a partir dos nodes EKS"
-    from_port       = 9098
-    to_port         = 9098
-    protocol        = "tcp"
-    security_groups = [module.eks.node_security_group_id]
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -158,27 +148,6 @@ resource "aws_db_instance" "postgres" {
   deletion_protection         = false
   skip_final_snapshot         = true
   auto_minor_version_upgrade  = true
-}
-
-resource "aws_msk_serverless_cluster" "this" {
-  cluster_name = local.name
-
-  vpc_config {
-    subnet_ids         = module.vpc.private_subnets
-    security_group_ids = [aws_security_group.data.id]
-  }
-
-  client_authentication {
-    sasl {
-      iam {
-        enabled = true
-      }
-    }
-  }
-}
-
-data "aws_msk_bootstrap_brokers" "this" {
-  cluster_arn = aws_msk_serverless_cluster.this.arn
 }
 
 resource "aws_budgets_budget" "monthly" {

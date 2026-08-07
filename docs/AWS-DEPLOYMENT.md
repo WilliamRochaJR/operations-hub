@@ -1,80 +1,57 @@
-# Deploy da PoC na AWS
+# Deploy efêmero da PoC na AWS
 
 ## Objetivo
 
-Este guia conecta o walking skeleton local à AWS sem mudar sua arquitetura funcional. Terraform cria a infraestrutura, Docker produz imagens imutáveis, ECR armazena essas imagens e Helm instala os quatro workloads no EKS.
+Este guia publica somente um PR escolhido manualmente, mantém a aplicação saudável por 20 minutos por padrão e destrói o ambiente. A decisão e os trade-offs estão no [ADR-0004](adr/0004-ephemeral-cost-controlled-aws-poc.md).
 
-Nenhum comando deste documento deve ser executado em uma conta sem antes revisar custos e permissões. `terraform plan` é leitura; `terraform apply` cria recursos cobrados.
+`terraform plan` não cria infraestrutura. `terraform apply`, EKS, RDS, EC2, EBS, ALB e IPv4 podem gerar cobrança. AWS Budgets alerta, mas não limita gastos.
 
-## Fluxo completo
+## Arquitetura da demonstração
 
 ```mermaid
 flowchart LR
-    git[GitHub] -->|OIDC temporário| gha[GitHub Actions]
-    gha -->|build e push| ecr[(Amazon ECR)]
-    gha -->|helm upgrade| eks[Amazon EKS]
-    ecr -->|pull por SHA| eks
-
-    user([Usuário]) --> alb[Application Load Balancer]
-    alb -->|/| web[React Web]
-    alb -->|/api| bff[NestJS BFF]
-    bff --> orders[Orders Spring Boot]
-    bff --> audit[Audit Spring Boot]
-    orders --> rds[(RDS PostgreSQL)]
-    audit --> rds
-    orders -. OrderCreated .-> msk[(MSK Serverless)]
-    msk -. evento .-> audit
-
-    secrets[Secrets Manager] -. credencial RDS .-> gha
-    orders -. Pod Identity produtora .-> msk
-    audit -. Pod Identity consumidora .-> msk
+    owner[Responsável] -->|PR + TTL| gha[GitHub Actions manual]
+    gha -->|OIDC| aws[AWS]
+    gha --> tf[Terraform da main]
+    gha -->|imagens do PR| ecr[(ECR)]
+    tf --> eks[EKS 1.36 Spot]
+    tf --> rds[(RDS PostgreSQL)]
+    eks --> kafka[(Kafka KRaft efêmero)]
+    eks --> web[React]
+    eks --> bff[NestJS BFF]
+    eks --> spring[Spring Boot services]
+    spring --> rds
+    spring -. eventos .-> kafka
+    alb[ALB] --> web
+    alb --> bff
+    gha -->|após TTL| destroy[Helm uninstall + Terraform destroy]
+    watchdog[Watchdog 15 min] -. lease expirado .-> destroy
 ```
 
-## O que já está codificado
+Não são criados MSK Serverless, NAT Gateway ou customer-managed KMS key. Kafka roda com uma réplica, KRaft e storage efêmero. O EKS usa criptografia de envelope padrão com chave pertencente à AWS.
 
-```text
-infra/
-├── terraform/
-│   ├── bootstrap/state/          # bucket S3 e locking
-│   ├── bootstrap/github-oidc/    # confiança GitHub e role temporária
-│   └── environments/poc/         # VPC, EKS, ECR, RDS, MSK e Budget
-└── helm/operations-hub/         # Deployments, Services, ConfigMap e Ingress
-```
+## Recursos persistentes e efêmeros
 
-O Terraform cria:
+Persistem entre demonstrações:
 
-- VPC em duas zonas de disponibilidade;
-- sub-redes públicas, privadas e de banco;
-- um NAT Gateway compartilhado para reduzir a quantidade de recursos;
-- EKS com um node group Spot pequeno;
+- bucket S3 privado e versionado do Terraform state;
+- provider OIDC do GitHub;
+- role `operations-hub-github-poc` e policies de automação.
+
+São criados e destruídos em cada demonstração:
+
+- VPC, Internet Gateway, rotas e sub-redes;
+- EKS 1.36 e um node Spot `t3.medium`;
 - quatro repositórios ECR;
-- RDS PostgreSQL privado;
-- MSK Serverless com autenticação IAM;
-- senha gerada e gerenciada pelo RDS no Secrets Manager;
-- orçamento mensal opcional;
-- identidade usada pelo AWS Load Balancer Controller;
-- identidades separadas para Orders e Audit.
+- RDS PostgreSQL `db.t4g.micro` privado;
+- Secrets Manager do RDS;
+- ALB criado pelo controller;
+- Budget mensal;
+- aplicações e Kafka instalados pelo Helm.
 
-O Helm instala `web`, `bff`, `orders-service` e `audit-service`. O Ingress envia `/api` ao BFF e as demais rotas ao React. RDS e MSK não rodam dentro do Kubernetes.
+## 1. Bootstrap do state
 
-## Pré-requisitos
-
-- uma conta AWS não produtiva;
-- AWS CLI autenticado por SSO ou outra credencial temporária;
-- Terraform, Docker, `kubectl` e Helm;
-- permissão para VPC, EKS, EC2, IAM, ECR, RDS, MSK, Secrets Manager e Budgets;
-- autorização para executar o bootstrap limitado de S3 e IAM.
-
-Confira a identidade antes de qualquer mudança:
-
-```bash
-AWS_PROFILE=operations-hub aws sts get-caller-identity
-aws configure get region
-```
-
-## 1. Preparar o state remoto
-
-O primeiro bootstrap cria somente o bucket S3 versionado, criptografado e sem acesso público. Ele começa com state local devido à dependência circular:
+Executado uma única vez com acesso humano via IAM Identity Center:
 
 ```bash
 cd infra/terraform/bootstrap/state
@@ -88,9 +65,9 @@ cp backend.hcl.example backend.hcl
 terraform init -migrate-state -backend-config=backend.hcl
 ```
 
-Esse é o primeiro `apply`, limitado ao bucket de state. O recurso possui `prevent_destroy`; a remoção exige uma decisão explícita.
+O bucket possui `prevent_destroy`. Ele não faz parte do teardown efêmero.
 
-## 2. Criar a confiança OIDC do GitHub
+## 2. Bootstrap OIDC e permissão efêmera
 
 ```bash
 cd ../github-oidc
@@ -101,145 +78,110 @@ terraform apply github-oidc.tfplan
 terraform output github_actions_role_arn
 ```
 
-A trust policy exige o subject exato:
+A trust policy aceita somente:
 
 ```text
 repo:WilliamRochaJR/operations-hub:environment:poc
 ```
 
-Se a conta já possuir o provider `token.actions.githubusercontent.com`, ele deve ser importado ou referenciado; não crie outro provider igual.
+A role não recebe `AdministratorAccess`. Ela recebe `PowerUserAccess` mais permissões IAM limitadas aos nomes do Operations Hub e aos service-linked roles necessários. Esse perfil é exclusivo para uma conta não produtiva e está documentado no ADR-0004.
 
-## 3. Preparar a infraestrutura da PoC
+Sempre revise o plano do bootstrap. Se já houver provider `token.actions.githubusercontent.com`, importe-o em vez de criar outro.
 
-```bash
-cd ../../environments/poc
-cp backend.hcl.example backend.hcl
-cp terraform.tfvars.example terraform.tfvars
-```
+## 3. GitHub Environment
 
-Edite os arquivos locais, incluindo os outputs de nome e ARN da role OIDC. Eles são ignorados pelo Git.
+No Environment `poc`, configure:
 
-## 4. Revisar antes de criar
+| Tipo | Nome | Valor |
+|---|---|---|
+| Variable | `AWS_ROLE_ARN` | output `github_actions_role_arn` |
+| Variable | `BUDGET_ALERT_EMAIL` | e-mail que confirmará o alerta AWS Budget |
 
-```bash
-terraform init -backend-config=backend.hcl
-terraform fmt -check -recursive
-terraform validate
-terraform plan -out=poc.tfplan
-terraform show poc.tfplan
-```
+Não configure `AWS_ACCESS_KEY_ID` nem `AWS_SECRET_ACCESS_KEY`.
 
-Somente depois de revisar o plano:
+## 4. Publicar um PR específico
 
-```bash
-terraform apply poc.tfplan
-```
+O workflow só existe na `main` e não possui gatilho `pull_request`.
 
-O `apply` não foi executado durante a criação desta estrutura.
+1. Abra **Actions → Deploy ephemeral PoC from PR**.
+2. Clique em **Run workflow**.
+3. Mantenha a branch do workflow como `main`.
+4. Informe o número de um PR aberto do próprio repositório.
+5. Informe TTL entre 5 e 60 minutos; o padrão é 20.
 
-## 5. Conectar o kubectl
-
-```bash
-aws eks update-kubeconfig \
-  --region "$(terraform output -raw aws_region)" \
-  --name "$(terraform output -raw cluster_name)"
-kubectl get nodes
-```
-
-## 6. Instalar o AWS Load Balancer Controller
-
-Terraform prepara a identidade do controller, mas o componente Kubernetes é instalado pelo Helm:
-
-```bash
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update eks
-helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  --namespace kube-system \
-  --set clusterName="$(terraform output -raw cluster_name)" \
-  --set serviceAccount.create=true \
-  --set serviceAccount.name=aws-load-balancer-controller
-```
-
-O papel usa uma policy AWS ampla para manter a primeira PoC legível. Essa simplificação está marcada no código e deve ser substituída pela policy mínima oficial antes de qualquer uso produtivo.
-
-## 7. Publicar as imagens
-
-Cada imagem recebe o SHA do commit; `latest` não é usado no CD.
+O workflow rejeita PR fechado, fork, TTL inválido e execução fora da `main`. A infraestrutura é lida do SHA confiável da `main`; somente as quatro imagens são construídas do SHA do PR.
 
 ```mermaid
 sequenceDiagram
-    participant CI as GitHub Actions
-    participant ECR as Amazon ECR
-    participant EKS as Amazon EKS
-    CI->>CI: testa e constrói
-    CI->>ECR: push web, bff, orders e audit com SHA
-    CI->>EKS: helm upgrade com o mesmo SHA
-    EKS->>ECR: pull das quatro imagens
-    CI->>EKS: aguarda rollout e executa smoke test
+    participant owner as Responsável
+    participant ci as GitHub Actions
+    participant aws as AWS
+    owner->>ci: Run workflow(PR 42, TTL 20)
+    ci->>ci: valida PR e origem
+    ci->>aws: cria lease de segurança
+    ci->>aws: terraform apply
+    ci->>aws: build, ECR, Helm e smoke test
+    ci-->>owner: URL do ALB
+    Note over ci,aws: TTL começa com a aplicação saudável
+    ci->>aws: remove Helm e ALB
+    ci->>aws: terraform destroy
 ```
 
-O workflow `.github/workflows/deploy-poc.yml` automatiza esse processo. Configure no Environment `poc` do GitHub:
+Provisionamento de EKS/RDS pode levar dezenas de minutos e não conta no TTL. O job possui timeout total de 180 minutos.
 
-| Tipo | Nome | Exemplo/origem |
-|---|---|---|
-| Variable | `AWS_REGION` | `us-east-1` |
-| Variable | `AWS_ROLE_ARN` | role OIDC de deploy |
-| Variable | `EKS_CLUSTER_NAME` | output `cluster_name` |
-| Variable | `ECR_REGISTRY` | `<account>.dkr.ecr.<region>.amazonaws.com` |
-| Variable | `RDS_ENDPOINT` | output `rds_endpoint` |
-| Variable | `MSK_BOOTSTRAP_SERVERS` | output `msk_bootstrap_brokers_sasl_iam` |
-| Variable | `DATABASE_SECRET_ARN` | output `database_secret_arn` |
+## 5. Teardown e watchdog
 
-O React é construído com `VITE_API_URL=/api`, portanto usa a mesma origem pública do ALB. O navegador não acessa diretamente os microsserviços.
+O cleanup normal usa `if: always()`:
 
-## 8. Segredo do banco
+1. remove o release `operations-hub`, incluindo o Ingress;
+2. aguarda o controller remover o ALB;
+3. remove o AWS Load Balancer Controller;
+4. executa `terraform destroy`;
+5. remove o lease S3.
 
-O próprio RDS gera, armazena e gerencia a senha master no Secrets Manager. O Terraform mantém somente o ARN. Durante o deploy, o workflow lê o JSON e cria/atualiza o Secret `operations-hub-database` no namespace. A senha não aparece em `values.yaml`, logs intencionais ou argumentos do Helm.
+O workflow **Cleanup expired PoC** roda a cada 15 minutos. Se o runner principal morrer, ele lê `operations-hub/leases/poc.json` no bucket de state e destrói o ambiente expirado.
 
-Essa sincronização ocorre no deploy e não acompanha rotação continuamente. Enquanto a PoC for temporária, execute novamente o workflow após uma rotação. Antes de manter o ambiente ativo por longo prazo, adote External Secrets Operator ou Secrets Store CSI Driver com uma estratégia de restart dos Pods.
+Para emergência:
 
-## 9. MSK e autenticação IAM
+1. abra **Actions → Cleanup expired PoC**;
+2. escolha **Run workflow**;
+3. marque `force=true`.
 
-Localmente, Spring usa Kafka sem autenticação. Na AWS, o chart ativa o profile Spring `aws`, que configura:
+O schedule do GitHub não é um relógio de tempo real e pode atrasar. Depois de uma falha, confirme no Console AWS que não restaram EKS, EC2, RDS, ALB, NAT Gateway, EIP ou MSK.
 
-```text
-security.protocol=SASL_SSL
-sasl.mechanism=AWS_MSK_IAM
-sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;
-sasl.client.callback.handler.class=software.amazon.msk.auth.iam.IAMClientCallbackHandler
-```
+## 6. Execução local excepcional
 
-Os dois projetos Spring incluem `software.amazon.msk:aws-msk-iam-auth`. Orders e Audit usam ServiceAccounts e EKS Pod Identities diferentes. Orders possui permissão de escrita no tópico; Audit possui leitura e acesso apenas ao seu consumer group. Web e BFF não recebem permissão Kafka.
-
-## 10. Validar o deploy
+O fluxo normal é o GitHub Actions. Para diagnóstico local:
 
 ```bash
-kubectl get pods,services,ingress -n operations-hub
-kubectl rollout status deployment/web -n operations-hub
-kubectl rollout status deployment/bff -n operations-hub
-kubectl rollout status deployment/orders-service -n operations-hub
-kubectl rollout status deployment/audit-service -n operations-hub
+AWS_PROFILE=operations-hub aws sts get-caller-identity
+cd infra/terraform/environments/poc
+cp backend.hcl.example backend.hcl
+cp terraform.tfvars.example terraform.tfvars
+terraform init -backend-config=backend.hcl
+terraform plan -out=poc.tfplan
 ```
 
-Quando o Ingress tiver endereço:
+Não aplique o plano local enquanto o workflow `ephemeral-poc` estiver ativo. O lock S3 protege o state, mas não substitui coordenação humana.
+
+Destruição local de emergência:
 
 ```bash
-APP_URL="http://$(kubectl get ingress operations-hub -n operations-hub -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-curl --fail "$APP_URL/health"
-curl --fail "$APP_URL/api/health"
+aws eks update-kubeconfig --region us-east-1 --name operations-hub-poc
+helm uninstall operations-hub -n operations-hub --wait || true
+helm uninstall aws-load-balancer-controller -n kube-system --wait || true
+terraform destroy
 ```
 
-Depois, criar um pedido pela interface confirma o caminho completo RDS → outbox → MSK → Audit.
+## 7. Critérios de encerramento
 
-## 11. Destruir e controlar custos
-
-Remova primeiro o release e confirme que o ALB desapareceu; depois destrua o Terraform:
+Após cada demonstração:
 
 ```bash
-helm uninstall operations-hub -n operations-hub
-kubectl delete namespace operations-hub
-terraform plan -destroy -out=destroy.tfplan
-terraform apply destroy.tfplan
+terraform state list
+aws eks list-clusters --region us-east-1
+aws rds describe-db-instances --region us-east-1
+aws elbv2 describe-load-balancers --region us-east-1
 ```
 
-Revise também recursos órfãos no console. EKS, NAT Gateway, RDS e MSK Serverless geram cobrança mesmo com pouco ou nenhum tráfego.
+O state do ambiente deve ficar vazio. O bucket de state, provider OIDC e role de bootstrap continuarão existentes por decisão arquitetural.

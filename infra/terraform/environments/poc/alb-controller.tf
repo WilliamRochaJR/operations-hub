@@ -14,11 +14,18 @@ resource "aws_iam_role" "load_balancer_controller" {
   assume_role_policy = data.aws_iam_policy_document.pod_identity_assume_role.json
 }
 
-# Escopo amplo apenas para a PoC. Antes de produção, trocar pela policy mínima
-# publicada para o AWS Load Balancer Controller.
+data "http" "load_balancer_controller_policy" {
+  url = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v3.5.0/docs/install/iam_policy.json"
+}
+
+resource "aws_iam_policy" "load_balancer_controller" {
+  name   = "${local.name}-load-balancer-controller"
+  policy = data.http.load_balancer_controller_policy.response_body
+}
+
 resource "aws_iam_role_policy_attachment" "load_balancer_controller" {
   role       = aws_iam_role.load_balancer_controller.name
-  policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
+  policy_arn = aws_iam_policy.load_balancer_controller.arn
 }
 
 resource "aws_eks_pod_identity_association" "load_balancer_controller" {

@@ -4,6 +4,7 @@
 - **Data:** 2026-08-04
 - **Responsáveis:** projeto Operations Hub
 - **Complementa:** ADR-0001
+- **Decisão AWS parcialmente substituída por:** ADR-0004
 - **Substituído por:** —
 
 ## Contexto
@@ -102,9 +103,11 @@ orders.events.v1.dlq
 
 Docker Compose executará um broker Kafka em modo apropriado para desenvolvimento, além de web, BFF, serviços e PostgreSQL.
 
-### AWS
+### AWS — decisão original
 
 Será usado Amazon MSK Serverless para reduzir a operação de brokers no EKS. Os workloads acessarão o cluster pela rede privada e usarão autenticação IAM. Essa escolha mantém Kafka real e gerenciado, mas exige validar disponibilidade regional e custo antes do provisionamento.
+
+O ADR-0004 substitui esta escolha somente para a PoC efêmera: o custo-base observado do MSK Serverless inviabiliza o orçamento. Kafka continua na primeira fatia, executado em KRaft com uma réplica no EKS; MSK permanece como destino de produção.
 
 O Terraform será responsável por cluster, rede, políticas IAM e informações de conexão. Tópicos serão administrados por automação explícita, não criados silenciosamente pela aplicação em produção.
 

@@ -12,8 +12,13 @@ database:
   passwordKey: password
 
 kafka:
-  bootstrapServers: "replace-with-msk-bootstrap-brokers"
-  authentication: iam
+  enabled: true
+  image: apache/kafka:4.3.1
+  bootstrapServers: "kafka:9092"
+  authentication: plaintext
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: 750m, memory: 1Gi }
 
 ingress:
   enabled: true
