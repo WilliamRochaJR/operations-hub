@@ -19,4 +19,5 @@ test-results/
 *.tfplan
 backend.hcl
 !backend.hcl.example
+infra/terraform/bootstrap/state/backend.tf
 kubeconfig*

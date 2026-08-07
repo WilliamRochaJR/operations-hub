@@ -79,10 +79,11 @@ O primeiro bootstrap cria somente o bucket S3 versionado, criptografado e sem ac
 ```bash
 cd infra/terraform/bootstrap/state
 cp terraform.tfvars.example terraform.tfvars
-terraform init -backend=false
+terraform init
 terraform plan -out=state.tfplan
 terraform apply state.tfplan
 
+cp backend.tf.example backend.tf
 cp backend.hcl.example backend.hcl
 terraform init -migrate-state -backend-config=backend.hcl
 ```
