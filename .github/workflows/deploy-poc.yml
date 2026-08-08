@@ -68,6 +68,30 @@ jobs:
         with:
           ref: ${{ steps.target.outputs.infra_sha }}
 
+      - name: Show non-sensitive OIDC claims
+        shell: bash
+        run: |
+          oidc_response="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")"
+          oidc_token="$(jq -r '.value' <<<"$oidc_response")"
+          payload="$(cut -d. -f2 <<<"$oidc_token")"
+          payload="${payload//-/+}"
+          payload="${payload//_/\/}"
+          case $(( ${#payload} % 4 )) in
+            2) payload="${payload}==" ;;
+            3) payload="${payload}=" ;;
+          esac
+
+          printf '%s' "$payload" | base64 --decode | jq '{
+            sub,
+            aud,
+            repository,
+            repository_owner,
+            ref,
+            job_workflow_ref
+          }'
+
       - name: Configure temporary AWS credentials
         id: aws
         uses: aws-actions/configure-aws-credentials@v5
