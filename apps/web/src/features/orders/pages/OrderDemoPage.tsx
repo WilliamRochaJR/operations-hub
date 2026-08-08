@@ -7,7 +7,7 @@ export function OrderDemoPage() {
 
   return (
     <main className="shell">
-      <p className="eyebrow">Walking skeleton</p>
+      <p className="eyebrow">Walking skeleton · ambiente efêmero AWS</p>
       <h1>Operations Hub</h1>
       <p className="lede">Crie um pedido e acompanhe o evento atravessar PostgreSQL, Kafka e o serviço de auditoria.</p>
       <section className="card" aria-labelledby="create-title">
