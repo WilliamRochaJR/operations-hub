@@ -81,8 +81,10 @@ terraform output github_actions_role_arn
 A trust policy aceita somente:
 
 ```text
-repo:WilliamRochaJR/operations-hub:environment:poc
+repo:WilliamRochaJR@38361127/operations-hub@1323559421:environment:poc
 ```
+
+Este repositório usa um subject OIDC personalizado pelo GitHub, com os IDs estáveis do proprietário e do repositório. O valor foi confirmado a partir dos claims não sensíveis emitidos para o workflow na `main`; não o substitua pelo formato padrão baseado apenas nos nomes. A audience permanece restrita a `sts.amazonaws.com`.
 
 A role não recebe `AdministratorAccess`. Ela recebe `PowerUserAccess` mais permissões IAM limitadas aos nomes do Operations Hub e aos service-linked roles necessários. Esse perfil é exclusivo para uma conta não produtiva e está documentado no ADR-0004.
 
