@@ -9,7 +9,7 @@ export function OrderDemoPage() {
     <main className="shell">
       <p className="eyebrow">Walking skeleton · ambiente efêmero AWS</p>
       <h1>Operations Hub</h1>
-      <p className="lede">Crie um pedido e acompanhe o evento atravessar PostgreSQL, Kafka e o serviço de auditoria.</p>
+      <p className="lede">Crie um pedido e valide, de ponta a ponta, o evento atravessando PostgreSQL, Kafka e o serviço de auditoria.</p>
       <section className="card" aria-labelledby="create-title">
         <h2 id="create-title">Novo pedido</h2>
         <OrderForm disabled={createOrder.isPending} onSubmit={(input) => createOrder.mutate(input)} />
