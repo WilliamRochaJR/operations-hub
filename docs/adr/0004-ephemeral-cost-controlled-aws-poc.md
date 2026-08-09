@@ -96,8 +96,11 @@ A role continua sem `AdministratorAccess`. Para criar e destruir o ambiente comp
 
 - `PowerUserAccess` para serviços não IAM;
 - policy IAM adicional limitada a roles, instance profiles e policies com nomes do projeto;
+- `iam:GetRole` limitado à service-linked role `AWSServiceRoleForAmazonEKSNodegroup`, necessária para validar a criação do node group;
 - `iam:CreateServiceLinkedRole` limitado aos serviços usados;
 - trust OIDC limitada ao repositório e ao environment `poc`.
+
+Como a pipeline é a criadora do cluster e também precisa administrá-lo, sua role é registrada somente pela entrada EKS explícita `github_actions`. A opção automática `enable_cluster_creator_admin_permissions` permanece desabilitada para evitar duas access entries com o mesmo principal.
 
 Esse escopo ainda é maior que o de uma pipeline que apenas publica imagens. Ele é aceito somente numa conta não produtiva, para um ambiente único e efêmero. Produção deve separar provisionamento e deploy em roles distintas, aplicar permission boundaries e exigir aprovação independente.
 

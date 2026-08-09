@@ -38,6 +38,12 @@ resource "aws_iam_role_policy" "github_scoped_iam" {
         ]
       },
       {
+        Sid      = "ReadEksNodegroupServiceLinkedRole"
+        Effect   = "Allow"
+        Action   = "iam:GetRole"
+        Resource = "arn:aws:iam::*:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
+      },
+      {
         Sid    = "ManageProjectInstanceProfiles"
         Effect = "Allow"
         Action = [

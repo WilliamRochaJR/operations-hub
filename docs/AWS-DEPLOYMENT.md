@@ -86,7 +86,9 @@ repo:WilliamRochaJR@38361127/operations-hub@1323559421:environment:poc
 
 Este repositório usa um subject OIDC personalizado pelo GitHub, com os IDs estáveis do proprietário e do repositório. O valor foi confirmado a partir dos claims não sensíveis emitidos para o workflow na `main`; não o substitua pelo formato padrão baseado apenas nos nomes. A audience permanece restrita a `sts.amazonaws.com`.
 
-A role não recebe `AdministratorAccess`. Ela recebe `PowerUserAccess` mais permissões IAM limitadas aos nomes do Operations Hub e aos service-linked roles necessários. Esse perfil é exclusivo para uma conta não produtiva e está documentado no ADR-0004.
+A role não recebe `AdministratorAccess`. Ela recebe `PowerUserAccess` mais permissões IAM limitadas aos nomes do Operations Hub. A exceção de leitura é `iam:GetRole` sobre `AWSServiceRoleForAmazonEKSNodegroup`, necessária para o EKS validar a service-linked role ao criar o node group. Esse perfil é exclusivo para uma conta não produtiva e está documentado no ADR-0004.
+
+O acesso administrativo ao cluster é criado uma única vez pela entrada EKS `github_actions`. Não habilite simultaneamente `enable_cluster_creator_admin_permissions`: como o workflow é também o criador do cluster, isso tentaria registrar a mesma role duas vezes.
 
 Sempre revise o plano do bootstrap. Se já houver provider `token.actions.githubusercontent.com`, importe-o em vez de criar outro.
 
