@@ -133,6 +133,8 @@ sequenceDiagram
 
 Provisionamento de EKS/RDS pode levar dezenas de minutos e não conta no TTL. O job possui timeout total de 180 minutos.
 
+Antes de instalar o AWS Load Balancer Controller, o workflow aguarda explicitamente pelo menos um Node EKS ficar `Ready`. A instalação possui timeout de 10 minutos. Se o Node ou o controller não ficar pronto, o log registra Nodes, Pods, logs do controller e eventos recentes do Kubernetes antes de iniciar o teardown; tokens e Secrets não são impressos por esse diagnóstico.
+
 ## 5. Teardown e watchdog
 
 O cleanup normal usa `if: always()`:
