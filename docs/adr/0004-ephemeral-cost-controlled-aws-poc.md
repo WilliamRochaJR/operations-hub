@@ -143,6 +143,7 @@ Rejeitada porque EKS e RDS podem consumir quase toda a janela. O TTL começa ap�
 |---|---|
 | EKS continua cobrado enquanto existe | TTL curto, watchdog e teardown manual |
 | Node possui IPv4 público | sem portas inbound públicas no SG do node; ambiente temporário |
+| Pods não acessam o IMDS do Node | IMDSv2 com hop limit `1`; região e VPC são fornecidas explicitamente ao Load Balancer Controller |
 | Kafka perde dados no teardown/restart | comportamento esperado da PoC; Testcontainers cobre persistência funcional |
 | Spot pode interromper o único node | aceitar nova execução; não é ambiente produtivo |
 | Role CI possui PowerUser fora de IAM | conta não produtiva, OIDC restrito, environment e IAM nominalmente limitado |
