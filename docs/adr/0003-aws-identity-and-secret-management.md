@@ -26,7 +26,7 @@ flowchart LR
 
 1. Pessoas acessam a conta com AWS CLI v2 e credenciais temporárias, preferencialmente pelo IAM Identity Center.
 2. O bootstrap é dividido em state S3 e confiança OIDC do GitHub.
-3. A trust policy OIDC aceita somente `WilliamRochaJR/operations-hub` no GitHub Environment `poc`.
+3. A trust policy OIDC aceita somente o subject personalizado `repo:WilliamRochaJR@38361127/operations-hub@1323559421:environment:poc`, emitido para este repositório no GitHub Environment `poc`.
 4. A role GitHub não recebe `AdministratorAccess`; o ambiente da PoC adiciona apenas permissões para ECR, leitura do cluster EKS e leitura do segredo RDS criado por ele.
 5. Orders e Audit usam Kubernetes ServiceAccounts diferentes e EKS Pod Identity.
 6. Orders pode produzir no tópico `orders.events.v1`; Audit pode consumir esse tópico e usar o grupo `audit-service`.
@@ -65,6 +65,7 @@ Adiada para manter o primeiro ambiente pequeno. É a evolução prevista para si
 - a senha não aparece no código, Helm values ou Terraform state;
 - bootstrap e infraestrutura da aplicação possuem ciclos de vida distintos;
 - a trust policy impede uso da role por outro repositório ou environment.
+- os IDs estáveis presentes no subject mantêm a identidade vinculada ao proprietário e ao repositório observados, mesmo que seus nomes sejam alterados.
 
 ## Consequências negativas e controles
 
