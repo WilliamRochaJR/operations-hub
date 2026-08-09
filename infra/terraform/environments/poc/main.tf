@@ -66,7 +66,9 @@ module "eks" {
     }
   }
 
-  enable_cluster_creator_admin_permissions = true
+  # O workflow que cria o cluster já recebe acesso pela entrada explícita abaixo.
+  # Habilitar também cluster_creator cadastraria a mesma role duas vezes.
+  enable_cluster_creator_admin_permissions = false
 
   access_entries = var.github_actions_role_arn == "" ? {} : {
     github_actions = {
