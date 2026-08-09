@@ -138,6 +138,7 @@ jobs:
 
           {
             echo "ECR_REGISTRY=$(terraform output -json ecr_repository_urls | jq -r '.web | split("/")[0]')"
+            echo "VPC_ID=$(terraform output -raw vpc_id)"
             echo "RDS_ENDPOINT=$(terraform output -raw rds_endpoint)"
             echo "DATABASE_SECRET_ARN=$(terraform output -raw database_secret_arn)"
           } >> "$GITHUB_ENV"
@@ -215,6 +216,8 @@ jobs:
             --version 3.5.0 \
             --namespace kube-system \
             --set clusterName="$CLUSTER_NAME" \
+            --set region="$AWS_REGION" \
+            --set vpcId="$VPC_ID" \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set replicaCount=1 \
             --wait --timeout 10m; then
